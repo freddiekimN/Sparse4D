@@ -21,6 +21,7 @@ from mmdet.datasets.pipelines import Compose
 from .utils import (
     draw_lidar_bbox3d_on_img,
     draw_lidar_bbox3d_on_bev,
+    plot_bev_orthogonal,
 )
 
 
@@ -650,8 +651,15 @@ class NuScenes3DDetTrackDataset(Dataset):
                     )
                 imgs.append(img)
 
+            # # ===== draw boxes_3d to BEV =====
+            # bev = draw_lidar_bbox3d_on_bev(
+            #     pred_bboxes_3d,
+            #     bev_size=img.shape[0] * 2,
+            #     color=color,
+            # )
+
             # ===== draw boxes_3d to BEV =====
-            bev = draw_lidar_bbox3d_on_bev(
+            bev = plot_bev_orthogonal(
                 pred_bboxes_3d,
                 bev_size=img.shape[0] * 2,
                 color=color,
@@ -668,6 +676,9 @@ class NuScenes3DDetTrackDataset(Dataset):
                     "rear right",
                 ]
             ):
+                if 'rear' in name:
+                    imgs[j] = cv2.flip(imgs[j], 1)
+                
                 imgs[j] = cv2.rectangle(
                     imgs[j],
                     (0, 0),
@@ -692,7 +703,7 @@ class NuScenes3DDetTrackDataset(Dataset):
             image = np.concatenate(
                 [
                     np.concatenate([imgs[2], imgs[0], imgs[1]], axis=1),
-                    np.concatenate([imgs[5], imgs[3], imgs[4]], axis=1),
+                    np.concatenate([imgs[4], imgs[3], imgs[5]], axis=1),
                 ],
                 axis=0,
             )

@@ -28,6 +28,156 @@ def box3d_to_corners(box3d):
     corners += box3d[:, None, :3]
     return corners
 
+def plot_bev_orthogonal(
+    bboxes_3d, bev_size, bev_range=115, color=(255, 0, 0), thickness=3
+):
+    if isinstance(bev_size, (list, tuple)):
+        bev_h, bev_w = bev_size
+    else:
+        bev_h, bev_w = bev_size, bev_size
+    bev = np.zeros([bev_h, bev_w, 3])
+
+    marking_color = (127, 127, 127)
+    bev_resolution = bev_range / bev_h
+
+    # 중앙 좌표
+    center_x, center_y = bev_w // 2, bev_h // 2
+    
+    step_plot = int(5 / bev_resolution)
+    start_pixel = int(2 / bev_resolution)
+    max_pixel = int(bev_h/step_plot)*step_plot
+    # 직교 좌표계 그리드 그리기
+    grid_interval=10
+    
+    for i in range(0, center_y, int(grid_interval / bev_resolution)):
+    
+        # 수평선 그리기
+        cv2.line(
+            bev,
+            (0, center_y - i),
+            (bev_w, center_y - i),
+            marking_color,
+            thickness=1,
+        )
+        
+        # 수평선 그리기
+        cv2.line(
+            bev,
+            (0, center_y + i),
+            (bev_w, center_y + i),
+            marking_color,
+            thickness=1,
+        )
+        
+        if i != 0:  # 중앙은 생략    
+            
+            distance_label = f"{np.round(i* bev_resolution)}m"
+            cv2.putText(
+                bev,
+                distance_label,
+                (center_y + i, bev_h - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,  # 글자 크기 절반으로 줄임
+                (255, 255, 255),
+                2,
+            )            
+        
+            distance_label = f"-{np.round(i* bev_resolution)}m"
+            cv2.putText(
+                bev,
+                distance_label,
+                (center_y - i, bev_h - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,  # 글자 크기 절반으로 줄임
+                (255, 255, 255),
+                2,
+            )            
+        else:
+            distance_label = f"{np.round(i* bev_resolution)}m"
+            cv2.putText(
+                bev,
+                distance_label,
+                (center_y + i, bev_h - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,  # 글자 크기 절반으로 줄임
+                (255, 255, 255),
+                2,
+            )            
+        
+    for i in range(0, center_x, int(grid_interval / bev_resolution)):
+    
+        # 수직선 그리기
+        cv2.line(
+            bev,
+            (center_x+i, 0),
+            (center_x+i, bev_h),
+            marking_color,
+            thickness=1,
+        )
+        
+        # 수직선 그리기
+        cv2.line(
+            bev,
+            (center_x-i, 0),
+            (center_x-i, bev_h),
+            marking_color,
+            thickness=1,
+        )        
+        if i != 0:  # 중앙은 생략    
+            
+            distance_label = f"-{np.round(i* bev_resolution)}m"
+            cv2.putText(
+                bev,
+                distance_label,
+                (0, center_x+i + 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,  # 글자 크기 절반으로 줄임
+                (255, 255, 255),
+                2,
+            )            
+        
+            distance_label = f"{np.round(i* bev_resolution)}m"
+            cv2.putText(
+                bev,
+                distance_label,
+                (0, center_x-i + 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,  # 글자 크기 절반으로 줄임
+                (255, 255, 255),
+                2,
+            )                  
+        else:
+            distance_label = f"{np.round(i* bev_resolution)}m"
+            cv2.putText(
+                bev,
+                distance_label,
+                (0, center_x+i + 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,  # 글자 크기 절반으로 줄임
+                (255, 255, 255),
+                2,
+            )            
+
+    if len(bboxes_3d) != 0:
+        bev_corners = box3d_to_corners(bboxes_3d)[:, [0, 3, 4, 7]][
+            ..., [0, 1]
+        ]
+        xs = bev_corners[..., 0] / bev_resolution + bev_w / 2
+        ys = -bev_corners[..., 1] / bev_resolution + bev_h / 2
+        for obj_idx, (x, y) in enumerate(zip(xs, ys)):
+            for p1, p2 in ((0, 1), (0, 2), (1, 3), (2, 3)):
+                if isinstance(color[0], (list, tuple)):
+                    tmp = color[obj_idx]
+                else:
+                    tmp = color
+                cv2.line(
+                    bev,
+                    (int(x[p1]), int(y[p1])),
+                    (int(x[p2]), int(y[p2])),
+                    tmp,
+                    thickness=thickness,
+                )
+    return bev.astype(np.uint8)
 
 def plot_rect3d_on_img(
     img, num_rects, rect_corners, color=(0, 255, 0), thickness=1

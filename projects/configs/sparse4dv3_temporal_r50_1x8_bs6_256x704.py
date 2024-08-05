@@ -453,5 +453,5 @@ vis_pipeline = [
 evaluation = dict(
     interval=num_iters_per_epoch * checkpoint_epoch_interval,
     pipeline=vis_pipeline,
-    out_dir="./results",  # for visualization
+    out_dir="./results_modified",  # for visualization
 )
