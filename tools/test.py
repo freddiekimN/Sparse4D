@@ -18,6 +18,15 @@ from mmdet.apis import single_gpu_test, multi_gpu_test, set_random_seed
 from mmdet.datasets import replace_ImageToTensor, build_dataset
 from mmdet.datasets import build_dataloader as build_dataloader_origin
 from mmdet.models import build_detector
+import sys
+import os
+
+# 현재 스크립트 파일의 디렉터리 경로
+current_dir = os.path.dirname(__file__)
+# 최상위 프로젝트 디렉터리 경로
+project_root = os.path.abspath(os.path.join(current_dir, '..'))
+# 최상위 프로젝트 디렉터리를 Python 경로에 추가
+sys.path.insert(0, project_root)
 
 from projects.mmdet3d_plugin.datasets.builder import build_dataloader
 from projects.mmdet3d_plugin.apis.test import custom_multi_gpu_test

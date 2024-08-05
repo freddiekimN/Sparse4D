@@ -1,6 +1,15 @@
 import numpy as np
 from sklearn.cluster import KMeans
 import mmcv
+import sys
+import os
+
+# 현재 스크립트 파일의 디렉터리 경로
+current_dir = os.path.dirname(__file__)
+# 최상위 프로젝트 디렉터리 경로
+project_root = os.path.abspath(os.path.join(current_dir, '..'))
+# 최상위 프로젝트 디렉터리를 Python 경로에 추가
+sys.path.insert(0, project_root)
 
 from projects.mmdet3d_plugin.core.box3d import *
 

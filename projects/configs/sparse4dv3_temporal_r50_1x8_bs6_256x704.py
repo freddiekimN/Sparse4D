@@ -79,11 +79,11 @@ log_config = dict(
 )
 load_from = None
 resume_from = None
-workflow = [("train", 1)]
+workflow = [("mini", 1)]
 fp16 = dict(loss_scale=32.0)
 input_shape = (704, 256)
 
-tracking_test = True
+tracking_test = False
 tracking_threshold = 0.2
 
 # ================== model ========================
@@ -370,7 +370,7 @@ data_basic_config = dict(
     data_root=data_root,
     classes=class_names,
     modality=input_modality,
-    version="v1.0-trainval",
+    version="v1.0-mini",
 )
 
 data_aug_conf = {
@@ -389,7 +389,7 @@ data = dict(
     workers_per_gpu=batch_size,
     train=dict(
         **data_basic_config,
-        ann_file=anno_root + "nuscenes_infos_train.pkl",
+        ann_file=anno_root + "nuscenes-mini_infos_train.pkl",
         pipeline=train_pipeline,
         test_mode=False,
         data_aug_conf=data_aug_conf,
@@ -399,7 +399,7 @@ data = dict(
     ),
     val=dict(
         **data_basic_config,
-        ann_file=anno_root + "nuscenes_infos_val.pkl",
+        ann_file=anno_root + "nuscenes-mini_infos_val.pkl",
         pipeline=test_pipeline,
         data_aug_conf=data_aug_conf,
         test_mode=True,
@@ -408,7 +408,7 @@ data = dict(
     ),
     test=dict(
         **data_basic_config,
-        ann_file=anno_root + "nuscenes_infos_val.pkl",
+        ann_file=anno_root + "nuscenes-mini_infos_val.pkl",
         pipeline=test_pipeline,
         data_aug_conf=data_aug_conf,
         test_mode=True,
@@ -453,5 +453,5 @@ vis_pipeline = [
 evaluation = dict(
     interval=num_iters_per_epoch * checkpoint_epoch_interval,
     pipeline=vis_pipeline,
-    # out_dir="./vis",  # for visualization
+    out_dir="./results",  # for visualization
 )
