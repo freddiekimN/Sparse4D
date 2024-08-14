@@ -458,7 +458,7 @@ class NuScenes3DDetTrackDataset(Dataset):
         )
         eval_set_map = {
             "v1.0-mini": "mini_val",
-            "v1.0-trainval": "val",
+            # "v1.0-trainval": "val",
         }
         if not tracking:
             from nuscenes.eval.detection.evaluate import NuScenesEval

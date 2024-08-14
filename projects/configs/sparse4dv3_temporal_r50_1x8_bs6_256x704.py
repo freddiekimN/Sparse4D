@@ -83,7 +83,7 @@ workflow = [("mini", 1)]
 fp16 = dict(loss_scale=32.0)
 input_shape = (704, 256)
 
-tracking_test = False
+tracking_test = True
 tracking_threshold = 0.2
 
 # ================== model ========================
