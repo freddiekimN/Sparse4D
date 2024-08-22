@@ -1,11 +1,8 @@
-
 import torch
 import cv2
 import numpy as np
 from mmcv import Config, DictAction
 from mmdet.models import build_detector
-from mmdet.datasets import replace_ImageToTensor, build_dataset
-from mmdet.datasets import build_dataloader as build_dataloader_origin
 from mmcv.runner import (
     get_dist_info,
     init_dist,
@@ -17,6 +14,13 @@ import os
 from mmcv.parallel import MMDataParallel, MMDistributedDataParallel
 import matplotlib.pyplot as plt
 from PIL import Image
+import mmcv
+
+from nuscenes.nuscenes import NuScenes
+from pyquaternion import Quaternion
+import copy
+from scipy.spatial.transform import Rotation as R
+import torchvision.transforms as transforms
 
 def _img_transform(img, aug_configs):
     H, W = img.shape[:2]
@@ -392,6 +396,108 @@ def plot_bev_orthogonal(
                 )
     return bev.astype(np.uint8)
 
+def get_projection_matrix(nusc, sample, camera_sensors, T_global_lidar, imgs, aug_config):
+    projection_matrices = []
+
+    for idx, cam in enumerate(camera_sensors):
+        cam_token = sample['data'][cam]
+        
+        # Get camera data, calibration, and ego pose
+        cam_data = nusc.get('sample_data', cam_token)
+        cam_calib = nusc.get('calibrated_sensor', cam_data['calibrated_sensor_token'])
+        ego_pose_cam = nusc.get('ego_pose', cam_data['ego_pose_token'])
+
+        # Calculate camera transformation matrices
+        cam_translation = np.array(cam_calib['translation'])
+        cam_rotation = Quaternion(cam_calib['rotation']).rotation_matrix
+        ego_translation_cam = np.array(ego_pose_cam['translation'])
+        ego_rotation_cam = Quaternion(ego_pose_cam['rotation']).rotation_matrix
+
+        T_global_ego_cam = np.eye(4)
+        T_global_ego_cam[:3, :3] = ego_rotation_cam
+        T_global_ego_cam[:3, 3] = ego_translation_cam
+
+        T_ego_cam = np.eye(4)
+        T_ego_cam[:3, :3] = cam_rotation
+        T_ego_cam[:3, 3] = cam_translation    
+
+        # Calculate the transformation matrix from lidar to camera
+        T_cam_lidar_rt2 = np.linalg.inv(T_ego_cam) @ np.linalg.inv(T_global_ego_cam) @ T_global_lidar
+
+        # Camera intrinsic matrix
+        intrinsic = copy.deepcopy(cam_calib["camera_intrinsic"])
+        viewpad = np.eye(4)
+        viewpad[:3, :3] = intrinsic
+
+        # Calculate the final projection matrix
+        lidar2img_rt2 = viewpad @ T_cam_lidar_rt2
+
+        # Apply image transformation (augmentation)
+        img, mat = _img_transform(imgs[idx], aug_config)
+
+        # Convert to torch tensor
+        lidar2img_rt2_tensor = torch.tensor(mat @ lidar2img_rt2)
+
+        projection_matrices.append(lidar2img_rt2_tensor)
+
+    return torch.stack(projection_matrices)
+
+# 이미지 리사이징 함수 정의
+def resize_image(image, size):
+    return cv2.resize(image, (size[1], size[0]), interpolation=cv2.INTER_LINEAR)
+
+def get_image_wh():
+    image_wh_value = torch.tensor([[[704., 256.],
+                                        [704., 256.],
+                                        [704., 256.],
+                                        [704., 256.],
+                                        [704., 256.],
+                                        [704., 256.]]], device='cuda:0')
+    return image_wh_value
+    
+def get_global_inv(ego_pose_lidar, lidar_calib):
+    
+    #lidar_translation = np.array(lidar_calib['translation'])
+    #lidar_rotation = Quaternion(lidar_calib['rotation']).rotation_matrix
+    lidar_translation = np.array([0, 0.0, 1.84019])
+    
+    # 쿼터니언을 Rotation 객체로 변환
+    lidar_rot = [lidar_calib['rotation'][1],lidar_calib['rotation'][2],lidar_calib['rotation'][3], lidar_calib['rotation'][0]]
+    rotation = R.from_quat(lidar_rot) 
+    euler_angles = rotation.as_euler('xyz', degrees=False) 
+    rotation = R.from_euler('xyz', [0, 0, euler_angles[2]])
+    x, y, z,w = rotation.as_quat()
+    lidar_rotation = Quaternion([w, x, y, z]).rotation_matrix
+    
+    # Ego pose 정보에서 변환 행렬 계산
+    ego_translation_lidar = np.array(ego_pose_lidar['translation'])
+    #ego_rotation_lidar = Quaternion(ego_pose_lidar['rotation']).rotation_matrix
+    
+    # 쿼터니언을 Rotation 객체로 변환
+    ego_rot = [ego_pose_lidar['rotation'][1],ego_pose_lidar['rotation'][2],ego_pose_lidar['rotation'][3], ego_pose_lidar['rotation'][0]]    
+    rotation = R.from_quat(ego_rot) 
+    euler_angles = rotation.as_euler('xyz', degrees=False) 
+    rotation = R.from_euler('xyz', [0, 0, euler_angles[2]])
+    x, y, z,w = rotation.as_quat()
+    ego_rotation_lidar = Quaternion([w, x, y, z]).rotation_matrix
+    
+    T_global_ego_lidar = np.eye(4)
+    T_global_ego_lidar[:3, :3] = ego_rotation_lidar
+    T_global_ego_lidar[:3, 3] = ego_translation_lidar
+
+
+    T_ego_lidar = np.eye(4)
+    T_ego_lidar[:3, :3] = lidar_rotation
+    T_ego_lidar[:3, 3] = lidar_translation
+
+    # 글로벌 좌표계에서 카메라 좌표계로 변환하는 행렬 계산
+    T_global_lidar = T_global_ego_lidar @ T_ego_lidar
+    T_global_lidar_inv = np.linalg.inv(T_global_lidar)
+    return T_global_lidar,T_global_lidar_inv
+
+plt.figure(figsize=(20, 10))
+plt.ion()
+
 ID_COLOR_MAP = [
     (59, 59, 238),
     (0, 255, 0),
@@ -416,29 +522,14 @@ current_dir = os.path.dirname(__file__)
 # 최상위 프로젝트 디렉터리를 Python 경로에 추가
 sys.path.insert(0, current_dir)
 
-from projects.mmdet3d_plugin.datasets.builder import build_dataloader
-
 config = 'projects/configs/sparse4dv3_temporal_r50_1x8_bs6_256x704.py'
 cfg = Config.fromfile(config)
 checkpoint = 'ckpt/sparse4dv3_r50.pth'
-
-# cfg.data.test.test_mode = True
-
-dataset = build_dataset(cfg.data.test)
-
-samples_per_gpu = cfg.data.test.pop("samples_per_gpu", 1)
-distributed = False
-data_loader = build_dataloader_origin(
-    dataset,
-    samples_per_gpu=samples_per_gpu,
-    workers_per_gpu=cfg.data.workers_per_gpu,
-    dist=distributed,
-    shuffle=False,
-)
-
+cfg.data.test.test_mode = True
 cfg.model.train_cfg = None
-model = build_detector(cfg.model, test_cfg=cfg.get("test_cfg"))
 
+from projects.mmdet3d_plugin.datasets.builder import build_dataloader
+model = build_detector(cfg.model, test_cfg=cfg.get("test_cfg"))
 
 fp16_cfg = cfg.get("fp16", None)
 if fp16_cfg is not None:
@@ -451,160 +542,162 @@ model = MMDataParallel(model, device_ids=[0])
 
 model.eval()
 
-data_iter = data_loader.__iter__()
-from mmcv.parallel import scatter
-plt.figure(figsize=(20, 10))
+aug_config = {'resize': 0.44, 'resize_dims': (704, 396), 'crop': (0, 140, 704, 396), 'flip': False, 'rotate': 0, 'rotate_3d': 0}
 
-from nuscenes.nuscenes import NuScenes
-from pyquaternion import Quaternion
-import copy
 nusc = NuScenes(version='v1.0-mini', dataroot='/data/sets/nuscenes', verbose=True)
-scene = nusc.scene[1]  # Adjust the scene index as needed
+scene = nusc.scene[5]  # Adjust the scene index as needed
 current_sample_token = scene['first_sample_token']
-sample = nusc.get('sample', current_sample_token)
 
-camera_sensors = ['CAM_FRONT', 'CAM_FRONT_RIGHT','CAM_FRONT_LEFT', 'CAM_BACK', 'CAM_BACK_RIGHT','CAM_BACK_LEFT']
+while current_sample_token:
 
-lidar_data = nusc.get("sample_data", sample["data"]["LIDAR_TOP"])
+    data = {
+        'projection_mat': torch.zeros((1, 6, 4, 4)), # 1x6x4x4 크기의 텐서
+        'img_metas': list()
+    }
+   
+    sample = nusc.get('sample', current_sample_token)
 
-ego_pose_lidar = nusc.get("ego_pose", lidar_data["ego_pose_token"])
+    camera_sensors = ['CAM_FRONT', 'CAM_FRONT_RIGHT','CAM_FRONT_LEFT', 'CAM_BACK', 'CAM_BACK_LEFT','CAM_BACK_RIGHT']
 
-lidar_calib = nusc.get("calibrated_sensor", lidar_data["calibrated_sensor_token"])
+    lidar_data = nusc.get("sample_data", sample["data"]["LIDAR_TOP"])
 
-# 카메라 캘리브레이션 정보에서 변환 행렬 계산
-lidar_translation = np.array(lidar_calib['translation'])
-lidar_rotation = Quaternion(lidar_calib['rotation']).rotation_matrix
+    ego_pose_lidar = nusc.get("ego_pose", lidar_data["ego_pose_token"])
 
-# Ego pose 정보에서 변환 행렬 계산
-ego_translation_lidar = np.array(ego_pose_lidar['translation'])
-ego_rotation_lidar = Quaternion(ego_pose_lidar['rotation']).rotation_matrix
+    lidar_calib = nusc.get("calibrated_sensor", lidar_data["calibrated_sensor_token"])
 
-T_global_ego_lidar = np.eye(4)
-T_global_ego_lidar[:3, :3] = ego_rotation_lidar
-T_global_ego_lidar[:3, 3] = ego_translation_lidar
+    # 카메라 이미지 추출
+    radar_tokens = {
+        'front': sample['data']['CAM_FRONT'],
+        'front_right': sample['data']['CAM_FRONT_RIGHT'],
+        'front_left': sample['data']['CAM_FRONT_LEFT'],
+        'back': sample['data']['CAM_BACK'],        
+        'back_left': sample['data']['CAM_BACK_LEFT'],
+        'back_right': sample['data']['CAM_BACK_RIGHT'],
+    }    
 
-
-T_ego_lidar = np.eye(4)
-T_ego_lidar[:3, :3] = lidar_rotation
-T_ego_lidar[:3, 3] = lidar_translation
-
-
-# 글로벌 좌표계에서 카메라 좌표계로 변환하는 행렬 계산
-T_global_lidar = T_global_ego_lidar @ T_ego_lidar
-T_global_lidar_inv = np.linalg.inv(T_global_lidar)
-
-try:
-    while True:
-        data = next(data_iter)
-        gpu_id = 0
-        data = scatter(data, [gpu_id])[0]
-
-        # image = data['img'].data[0]   
-        raw_imgs = data["img"][0].permute(0, 2, 3, 1).cpu().numpy()
-        imgs = []
-        img_norm_mean = np.array(cfg.img_norm_cfg["mean"])
-        img_norm_std = np.array(cfg.img_norm_cfg["std"])
-
-        image = raw_imgs * img_norm_std + img_norm_mean
-        for i in range(6):
-
-            img = image[i]
-            
-            if i > 2:
-                img = cv2.flip(img, 1)
-                
-            resized_img = cv2.resize(img,(1600, 900))
-            ubyte_img = resized_img.astype(np.uint8)
-            # rgb_img = cv2.cvtColor(ubyte_img, cv2.COLOR_BGR2RGB)
-            imgs.append(ubyte_img)
-            
-    
-            
-        aug_config = {'resize': 0.44, 'resize_dims': (704, 396), 'crop': (0, 140, 704, 396), 'flip': False, 'rotate': 0, 'rotate_3d': 0}
-        for idx, cam in enumerate(camera_sensors):
-            cam_token = sample['data'][cam]
-            # second method
-            cam_data = nusc.get('sample_data', cam_token)
-            
-            cam_calib = nusc.get('calibrated_sensor', cam_data['calibrated_sensor_token'])
-            ego_pose_cam = nusc.get('ego_pose', cam_data['ego_pose_token'])
-            
-            # 카메라 캘리브레이션 정보에서 변환 행렬 계산
-            cam_translation = np.array(cam_calib['translation'])
-            cam_rotation = Quaternion(cam_calib['rotation']).rotation_matrix
-
-            # Ego pose 정보에서 변환 행렬 계산
-            ego_translation_cam = np.array(ego_pose_cam['translation'])
-            ego_rotation_cam = Quaternion(ego_pose_cam['rotation']).rotation_matrix    
-            
-            ego2cam_rot = cam_rotation
-            ego2cam_trans = cam_translation
-            
-            global2ego_rot_cam = ego_rotation_cam
-            global2ego_trans_cam = ego_translation_cam
-            
-            T_global_ego_cam = np.eye(4)
-            T_global_ego_cam[:3, :3] = ego_rotation_cam
-            T_global_ego_cam[:3, 3] = ego_translation_cam
-
-            T_ego_cam = np.eye(4)
-            T_ego_cam[:3, :3] = cam_rotation
-            T_ego_cam[:3, 3] = cam_translation    
-            
-            T_cam_lidar_rt2 = np.linalg.inv(T_ego_cam) @ np.linalg.inv(T_global_ego_cam) @ T_global_lidar
+    mean = [123.675, 116.28 , 103.53 ] # np.array(cfg.img_norm_cfg["mean"])
+    std = [58.395, 57.12 , 57.375] # np.array(cfg.img_norm_cfg["std"])
+    # raw_imgs = data["img"][0].permute(0, 2, 3, 1).cpu().numpy()
+    # image = raw_imgs * std + mean
+    to_rgb = True
+    color_type = 'unchanged'    
+    imgs = []
+    for key, img_token in radar_tokens.items():
+        img_sensor = nusc.get('sample_data', img_token)
+        img = mmcv.imread(os.path.join(os.path.join(nusc.dataroot, img_sensor['filename'])), color_type)
+        img = img.astype(np.float32)
+        imgs.append(img)
         
-            intrinsic = copy.deepcopy(cam_calib["camera_intrinsic"])
-            viewpad = np.eye(4)
-            viewpad[:3, : 3] = intrinsic
-            lidar2img_rt2 = viewpad @ T_cam_lidar_rt2
-            
-            img, mat = _img_transform(
-                imgs[idx], aug_config,
-            )
-            
-            # plt.figure(idx)
-            # plt.imshow(img.astype(np.uint8))
-            # plt.draw()  # 그래프를 그립니다.
-            # plt.pause(1)  # 1초 대기
-            lidar2img_rt2_tensor = torch.tensor(mat @ lidar2img_rt2)
-            data['projection_mat'][0][idx] = lidar2img_rt2_tensor
-
-        with torch.no_grad():
-            result = model(return_loss=False, rescale=True, **data)
-            
-        images = np.concatenate(
-            [
-                np.concatenate([imgs[2], imgs[0], imgs[1]], axis=1),
-                np.concatenate([imgs[4], imgs[3], imgs[5]], axis=1),
-            ],
-            axis=0,
-        )  
-
-        result = result[0]["img_bbox"]
-        vis_score_threshold = 0.3    
-        pred_bboxes_3d = result["boxes_3d"][
-            result["scores_3d"] > vis_score_threshold
-        ]
-
-        color = []
-        for id in result["labels_3d"].cpu().numpy().tolist():
-            color.append(ID_COLOR_MAP_RGB[id])
-
-        bev = plot_bev_orthogonal(
-            pred_bboxes_3d,
-            bev_size=900 * 2,
-            color=color,
+        
+    N = len(imgs)
+    new_imgs = []
+    for i in range(N):
+        img, mat = _img_transform(
+            np.uint8(imgs[i]), aug_config,
         )
+        new_imgs.append(np.array(img).astype(np.float32))
         
-        images = np.concatenate([images, bev], axis=1)
-        
-        plt.clf()  # 현재 화면을 지우고 갱신할 수 있도록 합니다.
-        plt.imshow(images)
-        plt.draw()  # 그래프를 그립니다.
-        plt.pause(1)  # 1초 대기
-        # cv2.destroyAllWindows()
+    imgs_nor = []
+    for img in new_imgs:
+        img_nor = mmcv.imnormalize(img, np.array(mean), np.array(std), to_rgb)
+        imgs_nor.append(img_nor)        
 
-except StopIteration:
-    # 이터레이터의 끝에 도달한 경우
-    print("Iterator has been exhausted.")
+    # # 리스트를 (1, 6, 3, 256, 704) 크기의 텐서로 변환
+    # # numpy 배열을 PyTorch 텐서로 변환하고 차원 순서를(H, W, C) --> (C, H, W)로 변경
+    resized_imgs_tensor = [torch.tensor(img).permute(2, 0, 1).to('cuda:0') for img in imgs_nor]
+    imgs_tensor = torch.stack(resized_imgs_tensor).unsqueeze(0)  # (6, 3, 256, 704) -> (1, 6, 3, 256, 704)
+    
+    data['img'] = imgs_tensor.to(torch.float32)
+    
+
+    # 카메라 캘리브레이션 정보에서 변환 행렬 계산
+    T_global_lidar, T_global_lidar_inv = get_global_inv(ego_pose_lidar, lidar_calib)
+    
+    data['img_metas'] = [data['img_metas']]
+
+    data['img_metas'][0] = dict()
+    data['img_metas'][0]['T_global'] = T_global_lidar
+    data['img_metas'][0]['T_global_inv'] = T_global_lidar_inv
+    
+    raw_imgs = data["img"][0].permute(0, 2, 3, 1).cpu().numpy()
+    imgs = []
+    img_norm_mean = np.array(cfg.img_norm_cfg["mean"])
+    img_norm_std = np.array(cfg.img_norm_cfg["std"])
+    image = raw_imgs * img_norm_std + img_norm_mean
+    for i in range(6):
+        img = image[i]
+        if i > 2:
+            img = cv2.flip(img, 1)
+            
+        resized_img = cv2.resize(img,(1600, 900))
+        ubyte_img = resized_img.astype(np.uint8)
+        imgs.append(ubyte_img)    
+    
+
+    float_value = sample['timestamp']/1000000.0
+    data['img_metas'][0]['timestamp'] = float_value
+    data['timestamp'] = torch.tensor(float_value, device='cuda:0',dtype=torch.float64).unsqueeze(0)
+    
+    data['image_wh'] = get_image_wh()
+    
+    data['projection_mat'][0] = get_projection_matrix(nusc, sample, camera_sensors, T_global_lidar, imgs, aug_config)
+    
+    with torch.no_grad():
+        result = model(return_loss=False, rescale=True, **data)
+        
+    raw_imgs = data["img"][0].permute(0, 2, 3, 1).cpu().numpy()
+    imgs = []
+    img_norm_mean = np.array(cfg.img_norm_cfg["mean"])
+    img_norm_std = np.array(cfg.img_norm_cfg["std"])
+
+    image = raw_imgs * img_norm_std + img_norm_mean
+    for i in range(6):
+
+        img = image[i]
+        
+        if i > 2:
+            img = cv2.flip(img, 1)
+            
+        resized_img = cv2.resize(img,(1600, 900))
+        ubyte_img = resized_img.astype(np.uint8)
+        # rgb_img = cv2.cvtColor(ubyte_img, cv2.COLOR_BGR2RGB)
+        imgs.append(ubyte_img)        
+        
+    images = np.concatenate(
+        [
+            np.concatenate([imgs[2], imgs[0], imgs[1]], axis=1),
+            np.concatenate([imgs[4], imgs[3], imgs[5]], axis=1),
+        ],
+        axis=0,
+    )  
+
+    result = result[0]["img_bbox"]
+    vis_score_threshold = 0.3    
+    pred_bboxes_3d = result["boxes_3d"][
+        result["scores_3d"] > vis_score_threshold
+    ]
+
+    color = []
+    for id in result["labels_3d"].cpu().numpy().tolist():
+        color.append(ID_COLOR_MAP_RGB[id])
+
+    bev = plot_bev_orthogonal(
+        pred_bboxes_3d,
+        bev_size=900 * 2,
+        color=color,
+    )
+    
+    images = np.concatenate([images, bev], axis=1)
+    
+    plt.clf()  # 현재 화면을 지우고 갱신할 수 있도록 합니다.
+    plt.imshow(images)
+    plt.draw()  # 그래프를 그립니다.
+    plt.pause(1)  # 1초 대기
+    cv2.destroyAllWindows()
+    current_sample = nusc.get('sample', current_sample_token)    
+    current_sample_token = current_sample['next']  # Move to the next sample
+
+
+debug = 1
+
 
